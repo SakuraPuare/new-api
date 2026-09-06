@@ -134,6 +134,17 @@ func TestMultiprotocolGatewayEndpointTypes(t *testing.T) {
 	assert.Equal(t, want, common.GetEndpointTypesByChannelType(constant.ChannelTypeSub2API, "gpt-5"))
 }
 
+func TestXAIEndpointTypesAreModelSpecific(t *testing.T) {
+	assert.Equal(t,
+		[]constant.EndpointType{constant.EndpointTypeOpenAIVideo, constant.EndpointTypeOpenAI, constant.EndpointTypeOpenAIResponse},
+		common.GetEndpointTypesByChannelType(constant.ChannelTypeXai, "grok-imagine-video-1.5-preview"),
+	)
+	assert.Equal(t,
+		[]constant.EndpointType{constant.EndpointTypeOpenAI, constant.EndpointTypeOpenAIResponse},
+		common.GetEndpointTypesByChannelType(constant.ChannelTypeXai, "grok-4"),
+	)
+}
+
 func TestCopyChannelRejectsInvalidLegacyProxySettings(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	settingBytes, err := common.Marshal(dto.ChannelSettings{
