@@ -341,6 +341,10 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err = ApplyHeaderOverride(info, c, req); err != nil {
 		return nil, err
 	}
+	if info.ChannelType == appconstant.ChannelTypeXai && info.RelayMode == constant.RelayModeImagesEdits {
+		// The converted edit body is JSON even when the client uploaded multipart.
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)

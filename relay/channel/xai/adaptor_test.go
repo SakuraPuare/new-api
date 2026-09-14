@@ -3,6 +3,7 @@ package xai
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	providerconstant "github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -42,6 +44,8 @@ func newEditMultipartContext(t *testing.T, files ...editImageFile) *gin.Context 
 	require.NoError(t, writer.WriteField("model", "client-image-alias"))
 	require.NoError(t, writer.WriteField("prompt", "edit this image"))
 	require.NoError(t, writer.WriteField("n", "1"))
+	require.NoError(t, writer.WriteField("response_format", "b64_json"))
+	require.NoError(t, writer.WriteField("aspect_ratio", "1:1"))
 	for _, file := range files {
 		part, err := writer.CreateFormFile(file.field, file.filename)
 		require.NoError(t, err)
@@ -114,6 +118,8 @@ func TestConvertImageEditMultipartForXAI(t *testing.T) {
 			require.NoError(t, common.Unmarshal(body, &upstream))
 			assert.Equal(t, "grok-imagine-image-quality", upstream["model"])
 			assert.Equal(t, "edit this image", upstream["prompt"])
+			assert.Equal(t, "b64_json", upstream["response_format"])
+			assert.Equal(t, "1:1", upstream["aspect_ratio"])
 			if len(tt.want) == 1 {
 				assert.Equal(t, map[string]any{"type": "image_url", "url": tt.want[0]}, upstream["image"])
 				assert.NotContains(t, upstream, "images")
@@ -156,6 +162,8 @@ func TestImageEditOutboundRequestForXAI(t *testing.T) {
 
 	c := newEditMultipartContext(t, editImageFile{field: "image", filename: "input.jpg", content: jpegBytes})
 	info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
+	info.ChannelType = providerconstant.ChannelTypeXai
+	info.HeadersOverride = map[string]interface{}{"*": true}
 	info.ChannelBaseUrl = server.URL
 	info.RequestURLPath = "/v1/images/edits"
 	info.ApiKey = "test-key"
@@ -179,6 +187,8 @@ func TestImageEditOutboundRequestForXAI(t *testing.T) {
 	var upstream map[string]any
 	require.NoError(t, common.Unmarshal(seen.body, &upstream))
 	assert.Equal(t, "grok-imagine-image-quality", upstream["model"])
+	assert.Equal(t, "b64_json", upstream["response_format"])
+	assert.Equal(t, "1:1", upstream["aspect_ratio"])
 	assert.Equal(t, map[string]any{
 		"type": "image_url",
 		"url":  "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpegBytes),
@@ -214,7 +224,7 @@ func TestConvertImageEditJSONReferencesForXAI(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewBufferString("{}"))
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewBufferString(`{"aspect_ratio":"16:9"}`))
 			c.Request.Header.Set("Content-Type", "application/json")
 			info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
 			converted, err := (&Adaptor{}).ConvertImageRequest(c, info, dto.ImageRequest{
@@ -227,6 +237,7 @@ func TestConvertImageEditJSONReferencesForXAI(t *testing.T) {
 			require.NoError(t, common.Unmarshal(body, &upstream))
 			assert.Equal(t, "grok-imagine-image-quality", upstream["model"])
 			assert.Equal(t, "edit this image", upstream["prompt"])
+			assert.Equal(t, "16:9", upstream["aspect_ratio"])
 			if tt.wantImage != nil {
 				assert.Equal(t, tt.wantImage, upstream["image"])
 				assert.NotContains(t, upstream, "images")
@@ -273,6 +284,16 @@ func TestConvertImageEditRejectsInvalidSourcesForXAI(t *testing.T) {
 		info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
 		_, err := (&Adaptor{}).ConvertImageRequest(c, info, dto.ImageRequest{Model: "grok-imagine-image-quality", Prompt: "edit this image"})
 		require.Error(t, err)
+	})
+
+	t.Run("oversized multipart and JSON", func(t *testing.T) {
+		for _, contentType := range []string{"multipart/form-data; boundary=unused", "application/json"} {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(make([]byte, maxImageEditBodyBytes+1)))
+			c.Request.Header.Set("Content-Type", contentType)
+			_, err := (&Adaptor{}).ConvertImageRequest(c, newImageRelayInfo(relayconstant.RelayModeImagesEdits), dto.ImageRequest{})
+			require.True(t, errors.Is(err, common.ErrRequestBodyTooLarge))
+		}
 	})
 }
 

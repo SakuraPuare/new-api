@@ -21,11 +21,12 @@ type ImageInput struct {
 
 // quality, size or style are not supported by xAI API at the moment.
 type ImageRequest struct {
-	Model  string       `json:"model"`
-	Prompt string       `json:"prompt" binding:"required"`
-	N      *uint        `json:"n,omitempty"`
-	Image  *ImageInput  `json:"image,omitempty"`
-	Images []ImageInput `json:"images,omitempty"`
+	Model       string       `json:"model"`
+	Prompt      string       `json:"prompt" binding:"required"`
+	N           *uint        `json:"n,omitempty"`
+	Image       *ImageInput  `json:"image,omitempty"`
+	Images      []ImageInput `json:"images,omitempty"`
+	AspectRatio string       `json:"aspect_ratio,omitempty"`
 	// Size           string          `json:"size,omitempty"`
 	// Quality        string          `json:"quality,omitempty"`
 	ResponseFormat string `json:"response_format,omitempty"`
