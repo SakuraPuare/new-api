@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -19,6 +20,9 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -320,4 +324,117 @@ func TestConvertImageGenerationForXAI(t *testing.T) {
 	headers := make(http.Header)
 	require.NoError(t, (&Adaptor{}).SetupRequestHeader(c, &headers, info))
 	assert.Equal(t, "application/json", headers.Get("Content-Type"))
+}
+
+func TestImageEditNativeCostForXAI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const response = `{"data":[{"url":"https://example.com/edit.jpg"}],"usage":{"cost_in_usd_ticks":600000000}}`
+	info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
+	info.OriginModelName = "grok-imagine-image-quality"
+	info.PriceData = hosttypes.PriceData{
+		ModelRatio:     37.5,
+		GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1.3},
+	}
+	info.PriceData.AddOtherRatio("n", 5)
+	info.PriceData.AddOtherRatio("markup", 1.2)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	httpResp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}
+
+	result, apiErr := (&Adaptor{}).DoResponse(c, httpResp, info)
+	require.Nil(t, apiErr)
+	usage, ok := result.(*dto.Usage)
+	require.True(t, ok)
+	require.NotNil(t, usage.CostInUSDTicks)
+	assert.Equal(t, int64(600000000), *usage.CostInUSDTicks)
+	assert.Equal(t, response, recorder.Body.String())
+	assert.True(t, info.PriceData.UsePrice)
+	assert.InDelta(t, 0.06, info.PriceData.ModelPrice, 1e-12)
+	assert.Zero(t, info.PriceData.ModelRatio)
+	assert.Equal(t, map[string]float64{"markup": 1.2}, info.PriceData.OtherRatios())
+	assert.InDelta(t, 46800, info.PriceData.ApplyOtherRatiosToFloat(info.PriceData.ModelPrice*common.QuotaPerUnit*info.PriceData.GroupRatioInfo.GroupRatio), 1e-6)
+}
+
+func TestImageEditNativeCostAllowsZeroTicksForXAI(t *testing.T) {
+	zero := int64(0)
+	info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
+	info.OriginModelName = "grok-imagine-image-quality"
+	info.PriceData.ModelRatio = 37.5
+
+	require.Nil(t, applyImageEditNativeCost(info, &dto.Usage{CostInUSDTicks: &zero}))
+	assert.True(t, info.PriceData.UsePrice)
+	assert.Zero(t, info.PriceData.ModelPrice)
+	assert.Zero(t, info.PriceData.ModelRatio)
+}
+
+func TestImageEditNativeCostPreservesConfiguredPricingForXAI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	savedRatios := ratio_setting.ModelRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"explicit-ratio-xai-edit-test":15}`))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+	})
+	tests := []struct {
+		name      string
+		model     string
+		priceData hosttypes.PriceData
+	}{
+		{name: "fixed price", model: "grok-imagine-image-quality", priceData: hosttypes.PriceData{UsePrice: true, ModelPrice: 0.12}},
+		{name: "explicit model ratio", model: "explicit-ratio-xai-edit-test", priceData: hosttypes.PriceData{ModelRatio: 15}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "explicit model ratio" {
+				require.True(t, ratio_setting.HasConfiguredModelRatio(tt.model))
+			}
+			info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
+			info.BillingModelName = tt.model
+			info.PriceData = tt.priceData
+			info.PriceData.AddOtherRatio("n", 3)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			const response = `{"data":[{"url":"https://example.com/a.jpg"},{"url":"https://example.com/b.jpg"}],"usage":{}}`
+			httpResp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}
+
+			_, apiErr := (&Adaptor{}).DoResponse(c, httpResp, info)
+			require.Nil(t, apiErr)
+			assert.Equal(t, response, recorder.Body.String())
+			assert.Equal(t, tt.priceData.UsePrice, info.PriceData.UsePrice)
+			assert.Equal(t, tt.priceData.ModelPrice, info.PriceData.ModelPrice)
+			assert.Equal(t, tt.priceData.ModelRatio, info.PriceData.ModelRatio)
+			if tt.priceData.UsePrice {
+				assert.Equal(t, float64(2), info.PriceData.OtherRatios()["n"])
+			} else {
+				assert.Equal(t, float64(3), info.PriceData.OtherRatios()["n"])
+			}
+		})
+	}
+}
+
+func TestImageEditNativeCostRejectsMissingOrNegativeTicksForXAI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tt := range []struct {
+		name     string
+		response string
+	}{
+		{name: "missing", response: `{"data":[{"url":"https://example.com/edit.jpg"}],"usage":{}}`},
+		{name: "negative", response: `{"data":[{"url":"https://example.com/edit.jpg"}],"usage":{"cost_in_usd_ticks":-1}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
+			info.OriginModelName = "grok-imagine-image-quality"
+			info.PriceData.ModelRatio = 37.5
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			httpResp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tt.response))}
+
+			result, apiErr := (&Adaptor{}).DoResponse(c, httpResp, info)
+			require.Nil(t, result)
+			require.NotNil(t, apiErr)
+			assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+			assert.True(t, types.IsSkipRetryError(apiErr))
+			assert.Empty(t, recorder.Body.String())
+			assert.False(t, info.PriceData.UsePrice)
+		})
+	}
 }
