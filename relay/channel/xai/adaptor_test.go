@@ -59,7 +59,7 @@ func newEditMultipartContext(t *testing.T, files ...editImageFile) *gin.Context 
 	require.NoError(t, writer.Close())
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/edits", &body)
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	return c
 }
@@ -228,7 +228,7 @@ func TestConvertImageEditJSONReferencesForXAI(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewBufferString(`{"aspect_ratio":"16:9"}`))
+			c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/edits", bytes.NewBufferString(`{"aspect_ratio":"16:9"}`))
 			c.Request.Header.Set("Content-Type", "application/json")
 			info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
 			converted, err := (&Adaptor{}).ConvertImageRequest(c, info, dto.ImageRequest{
@@ -265,7 +265,7 @@ func TestConvertImageEditOptionalFieldsForXAI(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(tt.body))
+			c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/edits", strings.NewReader(tt.body))
 			c.Request.Header.Set("Content-Type", "application/json")
 			converted, err := (&Adaptor{}).ConvertImageRequest(c, newImageRelayInfo(relayconstant.RelayModeImagesEdits), dto.ImageRequest{
 				Model: "grok-imagine-image-quality", Prompt: "edit this image", Image: []byte(`{"url":"https://example.com/input.jpg"}`),
@@ -313,12 +313,27 @@ func TestConvertImageEditRejectsInvalidSourcesForXAI(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+	t.Run("text mask", func(t *testing.T) {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		require.NoError(t, writer.WriteField("mask", ""))
+		part, err := writer.CreateFormFile("image", "input.jpg")
+		require.NoError(t, err)
+		_, err = part.Write(jpegBytes)
+		require.NoError(t, err)
+		require.NoError(t, writer.Close())
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/edits", &body)
+		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+		_, err = (&Adaptor{}).ConvertImageRequest(c, newImageRelayInfo(relayconstant.RelayModeImagesEdits), dto.ImageRequest{})
+		require.ErrorContains(t, err, "xAI image edits do not support a mask")
+	})
 	for _, image := range []string{
 		`{"url":"","file_id":"file_123"}`,
 		`{"url":"https://example.com/input.jpg","type":""}`,
 	} {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{"image":`+image+`}`))
+		c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/edits", strings.NewReader(`{"image":`+image+`}`))
 		c.Request.Header.Set("Content-Type", "application/json")
 		_, err := (&Adaptor{}).ConvertImageRequest(c, newImageRelayInfo(relayconstant.RelayModeImagesEdits), dto.ImageRequest{Image: []byte(image)})
 		require.Error(t, err)
@@ -326,7 +341,7 @@ func TestConvertImageEditRejectsInvalidSourcesForXAI(t *testing.T) {
 
 	t.Run("malformed multipart", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewBufferString("--bad-boundary\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-imagine-image-quality"))
+		c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/edits", bytes.NewBufferString("--bad-boundary\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-imagine-image-quality"))
 		c.Request.Header.Set("Content-Type", "multipart/form-data; boundary=bad-boundary")
 		info := newImageRelayInfo(relayconstant.RelayModeImagesEdits)
 		_, err := (&Adaptor{}).ConvertImageRequest(c, info, dto.ImageRequest{Model: "grok-imagine-image-quality", Prompt: "edit this image"})
@@ -336,7 +351,7 @@ func TestConvertImageEditRejectsInvalidSourcesForXAI(t *testing.T) {
 	t.Run("oversized multipart and JSON", func(t *testing.T) {
 		for _, contentType := range []string{"multipart/form-data; boundary=unused", "application/json"} {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(make([]byte, maxImageEditBodyBytes+1)))
+			c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/edits", bytes.NewReader(make([]byte, maxImageEditBodyBytes+1)))
 			c.Request.Header.Set("Content-Type", contentType)
 			_, err := (&Adaptor{}).ConvertImageRequest(c, newImageRelayInfo(relayconstant.RelayModeImagesEdits), dto.ImageRequest{})
 			require.True(t, errors.Is(err, common.ErrRequestBodyTooLarge))
@@ -346,7 +361,7 @@ func TestConvertImageEditRejectsInvalidSourcesForXAI(t *testing.T) {
 
 func TestConvertImageGenerationForXAI(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewBufferString(`{"model":"grok-imagine-image-quality","prompt":"a tree"}`))
+	c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/images/generations", bytes.NewBufferString(`{"model":"grok-imagine-image-quality","prompt":"a tree"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	info := newImageRelayInfo(relayconstant.RelayModeImagesGenerations)
 	converted, err := (&Adaptor{}).ConvertImageRequest(c, info, dto.ImageRequest{
