@@ -14,9 +14,9 @@ type ChatCompletionResponse struct {
 }
 
 type ImageInput struct {
-	Type   string `json:"type,omitempty"`
-	URL    string `json:"url,omitempty"`
-	FileID string `json:"file_id,omitempty"`
+	Type   *string `json:"type,omitempty"`
+	URL    *string `json:"url,omitempty"`
+	FileID *string `json:"file_id,omitempty"`
 }
 
 // quality, size or style are not supported by xAI API at the moment.
@@ -26,10 +26,10 @@ type ImageRequest struct {
 	N           *uint        `json:"n,omitempty"`
 	Image       *ImageInput  `json:"image,omitempty"`
 	Images      []ImageInput `json:"images,omitempty"`
-	AspectRatio string       `json:"aspect_ratio,omitempty"`
+	AspectRatio *string      `json:"aspect_ratio,omitempty"`
 	// Size           string          `json:"size,omitempty"`
 	// Quality        string          `json:"quality,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"`
+	ResponseFormat *string `json:"response_format,omitempty"`
 	// Style          string          `json:"style,omitempty"`
 	// User           string          `json:"user,omitempty"`
 	// ExtraFields    json.RawMessage `json:"extra_fields,omitempty"`

@@ -253,6 +253,39 @@ func TestConvertImageEditJSONReferencesForXAI(t *testing.T) {
 	}
 }
 
+func TestConvertImageEditOptionalFieldsForXAI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tt := range []struct {
+		name       string
+		body       string
+		wantValues bool
+	}{
+		{name: "absent", body: `{"image":{"url":"https://example.com/input.jpg"}}`},
+		{name: "explicit empty", body: `{"image":{"url":"https://example.com/input.jpg"},"aspect_ratio":"","response_format":""}`, wantValues: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(tt.body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			converted, err := (&Adaptor{}).ConvertImageRequest(c, newImageRelayInfo(relayconstant.RelayModeImagesEdits), dto.ImageRequest{
+				Model: "grok-imagine-image-quality", Prompt: "edit this image", Image: []byte(`{"url":"https://example.com/input.jpg"}`),
+			})
+			require.NoError(t, err)
+			body, err := common.Marshal(converted)
+			require.NoError(t, err)
+			var upstream map[string]any
+			require.NoError(t, common.Unmarshal(body, &upstream))
+			if tt.wantValues {
+				assert.Equal(t, "", upstream["aspect_ratio"])
+				assert.Equal(t, "", upstream["response_format"])
+			} else {
+				assert.NotContains(t, upstream, "aspect_ratio")
+				assert.NotContains(t, upstream, "response_format")
+			}
+		})
+	}
+}
+
 func TestConvertImageEditRejectsInvalidSourcesForXAI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	jpegBytes := testImageBytes(t, "jpeg")
@@ -279,6 +312,16 @@ func TestConvertImageEditRejectsInvalidSourcesForXAI(t *testing.T) {
 			_, err := (&Adaptor{}).ConvertImageRequest(c, info, dto.ImageRequest{Model: "grok-imagine-image-quality", Prompt: "edit this image"})
 			require.Error(t, err)
 		})
+	}
+	for _, image := range []string{
+		`{"url":"","file_id":"file_123"}`,
+		`{"url":"https://example.com/input.jpg","type":""}`,
+	} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{"image":`+image+`}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		_, err := (&Adaptor{}).ConvertImageRequest(c, newImageRelayInfo(relayconstant.RelayModeImagesEdits), dto.ImageRequest{Image: []byte(image)})
+		require.Error(t, err)
 	}
 
 	t.Run("malformed multipart", func(t *testing.T) {
