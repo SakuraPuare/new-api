@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/QuantumNous/new-api/relay/constant"
 
@@ -328,7 +329,11 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
 	switch info.RelayMode {
-	case constant.RelayModeImagesGenerations, constant.RelayModeImagesEdits:
+	case constant.RelayModeImagesEdits:
+		usage, err = openai.OpenaiImageHandlerWithUsageHook(c, info, resp, func(parsed *dto.Usage) *types.NewAPIError {
+			return applyImageEditNativeCost(info, parsed)
+		})
+	case constant.RelayModeImagesGenerations:
 		usage, err = openai.OpenaiImageHandler(c, info, resp)
 	case constant.RelayModeResponses:
 		if info.IsStream {
@@ -344,6 +349,24 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		}
 	}
 	return
+}
+
+func applyImageEditNativeCost(info *relaycommon.RelayInfo, usage *dto.Usage) *types.NewAPIError {
+	if info.PriceData.UsePrice || info.TieredBillingSnapshot != nil || ratio_setting.HasConfiguredModelRatio(info.GetBillingModelName()) {
+		return nil
+	}
+	if usage.CostInUSDTicks == nil || *usage.CostInUSDTicks < 0 {
+		return types.NewErrorWithStatusCode(errors.New("xAI image edit response has no valid cost_in_usd_ticks"),
+			types.ErrorCodeBadResponseBody, http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+	}
+
+	info.PriceData.ModelPrice = float64(*usage.CostInUSDTicks) / 10_000_000_000
+	info.PriceData.UsePrice = true
+	info.PriceData.ModelRatio = 0
+	ratios := info.PriceData.OtherRatios()
+	delete(ratios, "n")
+	info.PriceData.ReplaceOtherRatios(ratios)
+	return nil
 }
 
 func (a *Adaptor) GetModelList() []string {
