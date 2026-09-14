@@ -199,7 +199,7 @@ func multipartImageInputs(c *gin.Context) ([]ImageInput, error) {
 			return nil, fmt.Errorf("invalid image edit form: %w", err)
 		}
 		name := part.FormName()
-		if name == "mask" && part.FileName() != "" {
+		if name == "mask" {
 			part.Close()
 			return nil, errors.New("xAI image edits do not support a mask")
 		}
