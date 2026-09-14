@@ -81,6 +81,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 				return apiErr
 			}
 			if info.ChannelType == constant.ChannelTypeXai && info.RelayMode == relayconstant.RelayModeImagesEdits {
+				if common.IsRequestBodyTooLargeError(err) {
+					return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+				}
 				return types.NewErrorWithStatusCode(err, types.ErrorCodeConvertRequestFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			}
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed)

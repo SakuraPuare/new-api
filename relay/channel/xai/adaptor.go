@@ -29,6 +29,8 @@ import (
 type Adaptor struct {
 }
 
+const maxImageEditBodyBytes = 8 << 20
+
 func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
 	//TODO implement me
 	return nil, errors.New("not implemented")
@@ -55,6 +57,16 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	if info.RelayMode != constant.RelayModeImagesEdits {
 		return xaiRequest, nil
 	}
+	if c.Request.ContentLength > maxImageEditBodyBytes {
+		return nil, fmt.Errorf("xAI image edit request exceeds 8 MiB: %w", common.ErrRequestBodyTooLarge)
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil, err
+	}
+	if storage.Size() > maxImageEditBodyBytes {
+		return nil, fmt.Errorf("xAI image edit request exceeds 8 MiB: %w", common.ErrRequestBodyTooLarge)
+	}
 	if len(request.Mask) > 0 && string(request.Mask) != "null" {
 		return nil, errors.New("xAI image edits do not support a mask")
 	}
@@ -64,6 +76,19 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		return nil, fmt.Errorf("invalid image edit content type: %w", err)
 	}
 	if mediaType == "multipart/form-data" {
+		form := c.Request.MultipartForm
+		if form == nil {
+			form, err = common.ParseMultipartFormReusable(c)
+			if err != nil {
+				return nil, fmt.Errorf("invalid image edit form: %w", err)
+			}
+		}
+		if values := form.Value["response_format"]; len(values) > 0 {
+			xaiRequest.ResponseFormat = values[0]
+		}
+		if values := form.Value["aspect_ratio"]; len(values) > 0 {
+			xaiRequest.AspectRatio = values[0]
+		}
 		inputs, err := multipartImageInputs(c)
 		if err != nil {
 			return nil, err
@@ -74,6 +99,15 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			xaiRequest.Images = inputs
 		}
 		return xaiRequest, nil
+	}
+	if mediaType == "application/json" {
+		var options struct {
+			AspectRatio string `json:"aspect_ratio"`
+		}
+		if err := common.UnmarshalBodyReusable(c, &options); err != nil {
+			return nil, fmt.Errorf("invalid image edit JSON: %w", err)
+		}
+		xaiRequest.AspectRatio = options.AspectRatio
 	}
 
 	if len(request.Image) > 0 && len(request.Images) > 0 {
