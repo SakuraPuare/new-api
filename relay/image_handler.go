@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -54,7 +55,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	var requestBody io.Reader
 	var jsonData []byte
 
-	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
+	xaiMultipartEdit := info.ChannelType == constant.ChannelTypeXai &&
+		info.RelayMode == relayconstant.RelayModeImagesEdits && c.ContentType() == "multipart/form-data"
+	if (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) && !xaiMultipartEdit {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -76,6 +79,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 			var apiErr *types.NewAPIError
 			if errors.As(err, &apiErr) {
 				return apiErr
+			}
+			if info.ChannelType == constant.ChannelTypeXai && info.RelayMode == relayconstant.RelayModeImagesEdits {
+				return types.NewErrorWithStatusCode(err, types.ErrorCodeConvertRequestFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			}
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed)
 		}
@@ -117,7 +123,11 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
-		logger.LogDebug(c, "image request body: %s", jsonData)
+		if info.ChannelType == constant.ChannelTypeXai && info.RelayMode == relayconstant.RelayModeImagesEdits {
+			logger.LogDebug(c, "xAI image edit request body omitted")
+		} else {
+			logger.LogDebug(c, "image request body: %s", jsonData)
+		}
 		body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())

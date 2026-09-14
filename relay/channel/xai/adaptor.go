@@ -1,11 +1,18 @@
 package xai
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -42,10 +49,179 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	xaiRequest := ImageRequest{
 		Model:          request.Model,
 		Prompt:         request.Prompt,
-		N:              int(lo.FromPtrOr(request.N, uint(1))),
+		N:              request.N,
 		ResponseFormat: request.ResponseFormat,
 	}
-	return xaiRequest, nil
+	if info.RelayMode != constant.RelayModeImagesEdits {
+		return xaiRequest, nil
+	}
+	if len(request.Mask) > 0 && string(request.Mask) != "null" {
+		return nil, errors.New("xAI image edits do not support a mask")
+	}
+
+	mediaType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid image edit content type: %w", err)
+	}
+	if mediaType == "multipart/form-data" {
+		inputs, err := multipartImageInputs(c)
+		if err != nil {
+			return nil, err
+		}
+		if len(inputs) == 1 {
+			xaiRequest.Image = &inputs[0]
+		} else {
+			xaiRequest.Images = inputs
+		}
+		return xaiRequest, nil
+	}
+
+	if len(request.Image) > 0 && len(request.Images) > 0 {
+		return nil, errors.New("provide image or images, not both")
+	}
+	if len(request.Image) > 0 {
+		input, err := decodeImageInput(request.Image)
+		if err != nil {
+			return nil, err
+		}
+		xaiRequest.Image = &input
+		return xaiRequest, nil
+	}
+	if len(request.Images) > 0 {
+		var rawInputs []json.RawMessage
+		if err := common.Unmarshal(request.Images, &rawInputs); err != nil {
+			return nil, fmt.Errorf("invalid images: %w", err)
+		}
+		if len(rawInputs) == 0 || len(rawInputs) > 5 {
+			return nil, errors.New("xAI image edits require 1 to 5 images")
+		}
+		for _, raw := range rawInputs {
+			input, err := decodeImageInput(raw)
+			if err != nil {
+				return nil, err
+			}
+			xaiRequest.Images = append(xaiRequest.Images, input)
+		}
+		return xaiRequest, nil
+	}
+	return nil, errors.New("image is required")
+}
+
+func decodeImageInput(raw json.RawMessage) (ImageInput, error) {
+	var url string
+	if err := common.Unmarshal(raw, &url); err == nil {
+		if strings.TrimSpace(url) == "" {
+			return ImageInput{}, errors.New("image URL is required")
+		}
+		return ImageInput{Type: "image_url", URL: url}, nil
+	}
+
+	var input ImageInput
+	if err := common.Unmarshal(raw, &input); err != nil {
+		return ImageInput{}, fmt.Errorf("invalid image input: %w", err)
+	}
+	if (strings.TrimSpace(input.URL) == "") == (strings.TrimSpace(input.FileID) == "") {
+		return ImageInput{}, errors.New("image input requires exactly one of url or file_id")
+	}
+	if input.URL != "" && input.Type != "" && input.Type != "image_url" {
+		return ImageInput{}, errors.New("invalid image URL type")
+	}
+	return input, nil
+}
+
+func multipartImageInputs(c *gin.Context) ([]ImageInput, error) {
+	_, params, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if err != nil || params["boundary"] == "" {
+		return nil, errors.New("invalid multipart image edit boundary")
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil, err
+	}
+	body, err := storage.NewReader()
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	reader := multipart.NewReader(body, params["boundary"])
+	var inputs []ImageInput
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("invalid image edit form: %w", err)
+		}
+		name := part.FormName()
+		if name == "mask" && part.FileName() != "" {
+			part.Close()
+			return nil, errors.New("xAI image edits do not support a mask")
+		}
+		if name != "image" && name != "image[]" && name != "images" && name != "images[]" &&
+			!(strings.HasPrefix(name, "image[") && strings.HasSuffix(name, "]")) {
+			part.Close()
+			continue
+		}
+		if len(inputs) == 5 {
+			part.Close()
+			return nil, errors.New("xAI image edits require 1 to 5 images")
+		}
+
+		if part.FileName() == "" {
+			value, readErr := io.ReadAll(part)
+			part.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("read image URL: %w", readErr)
+			}
+			text := strings.TrimSpace(string(value))
+			if text == "" {
+				return nil, errors.New("image URL is required")
+			}
+			if strings.HasPrefix(text, "{") || strings.HasPrefix(text, `"`) {
+				input, err := decodeImageInput(json.RawMessage(text))
+				if err != nil {
+					return nil, err
+				}
+				inputs = append(inputs, input)
+			} else {
+				inputs = append(inputs, ImageInput{Type: "image_url", URL: text})
+			}
+			continue
+		}
+
+		var head [512]byte
+		n, readErr := io.ReadFull(part, head[:])
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			part.Close()
+			return nil, fmt.Errorf("read image file: %w", readErr)
+		}
+		contentType := http.DetectContentType(head[:n])
+		if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+			part.Close()
+			return nil, fmt.Errorf("unsupported image type: %s", contentType)
+		}
+		var encoded strings.Builder
+		encoded.WriteString("data:")
+		encoded.WriteString(contentType)
+		encoded.WriteString(";base64,")
+		encoder := base64.NewEncoder(base64.StdEncoding, &encoded)
+		_, copyErr := io.Copy(encoder, io.MultiReader(bytes.NewReader(head[:n]), part))
+		closeErr := encoder.Close()
+		part.Close()
+		if copyErr != nil {
+			return nil, fmt.Errorf("read image file: %w", copyErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("encode image file: %w", closeErr)
+		}
+		inputs = append(inputs, ImageInput{Type: "image_url", URL: encoded.String()})
+	}
+	if len(inputs) == 0 {
+		return nil, errors.New("image is required")
+	}
+	return inputs, nil
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
@@ -57,6 +233,9 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
+	if info.RelayMode == constant.RelayModeImagesEdits {
+		req.Set("Content-Type", "application/json")
+	}
 	req.Set("Authorization", "Bearer "+info.ApiKey)
 	return nil
 }
