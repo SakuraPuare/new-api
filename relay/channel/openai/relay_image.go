@@ -24,6 +24,12 @@ import (
 // OpenaiImageHandler handles non-streaming OpenAI image responses
 // (generations/edits), returning the parsed usage for billing.
 func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	return OpenaiImageHandlerWithUsageHook(c, info, resp, nil)
+}
+
+// OpenaiImageHandlerWithUsageHook lets a channel validate and price parsed usage
+// before the successful response is written to the client.
+func OpenaiImageHandlerWithUsageHook(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, beforeWrite func(*dto.Usage) *types.NewAPIError) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
 
 	responseBody, err := io.ReadAll(resp.Body)
@@ -42,6 +48,11 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	}
 
 	info.UpdateImageCount(openaiImageResponseCount(responseBody))
+	if beforeWrite != nil {
+		if apiErr := beforeWrite(&usageResp.Usage); apiErr != nil {
+			return nil, apiErr
+		}
+	}
 
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
