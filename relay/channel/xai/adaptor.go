@@ -50,10 +50,12 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
 	xaiRequest := ImageRequest{
-		Model:          request.Model,
-		Prompt:         request.Prompt,
-		N:              request.N,
-		ResponseFormat: request.ResponseFormat,
+		Model:  request.Model,
+		Prompt: request.Prompt,
+		N:      request.N,
+	}
+	if request.ResponseFormat != "" {
+		xaiRequest.ResponseFormat = &request.ResponseFormat
 	}
 	if info.RelayMode != constant.RelayModeImagesEdits {
 		return xaiRequest, nil
@@ -85,10 +87,10 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			}
 		}
 		if values := form.Value["response_format"]; len(values) > 0 {
-			xaiRequest.ResponseFormat = values[0]
+			xaiRequest.ResponseFormat = &values[0]
 		}
 		if values := form.Value["aspect_ratio"]; len(values) > 0 {
-			xaiRequest.AspectRatio = values[0]
+			xaiRequest.AspectRatio = &values[0]
 		}
 		inputs, err := multipartImageInputs(c)
 		if err != nil {
@@ -103,12 +105,16 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	}
 	if mediaType == "application/json" {
 		var options struct {
-			AspectRatio string `json:"aspect_ratio"`
+			AspectRatio    *string `json:"aspect_ratio"`
+			ResponseFormat *string `json:"response_format"`
 		}
 		if err := common.UnmarshalBodyReusable(c, &options); err != nil {
 			return nil, fmt.Errorf("invalid image edit JSON: %w", err)
 		}
 		xaiRequest.AspectRatio = options.AspectRatio
+		if options.ResponseFormat != nil {
+			xaiRequest.ResponseFormat = options.ResponseFormat
+		}
 	}
 
 	if len(request.Image) > 0 && len(request.Images) > 0 {
@@ -148,17 +154,20 @@ func decodeImageInput(raw json.RawMessage) (ImageInput, error) {
 		if strings.TrimSpace(url) == "" {
 			return ImageInput{}, errors.New("image URL is required")
 		}
-		return ImageInput{Type: "image_url", URL: url}, nil
+		imageType := "image_url"
+		return ImageInput{Type: &imageType, URL: &url}, nil
 	}
 
 	var input ImageInput
 	if err := common.Unmarshal(raw, &input); err != nil {
 		return ImageInput{}, fmt.Errorf("invalid image input: %w", err)
 	}
-	if (strings.TrimSpace(input.URL) == "") == (strings.TrimSpace(input.FileID) == "") {
+	if (input.URL != nil && strings.TrimSpace(*input.URL) == "") ||
+		(input.FileID != nil && strings.TrimSpace(*input.FileID) == "") ||
+		(input.URL == nil) == (input.FileID == nil) {
 		return ImageInput{}, errors.New("image input requires exactly one of url or file_id")
 	}
-	if input.URL != "" && input.Type != "" && input.Type != "image_url" {
+	if input.URL != nil && input.Type != nil && *input.Type != "image_url" {
 		return ImageInput{}, errors.New("invalid image URL type")
 	}
 	return input, nil
@@ -221,7 +230,8 @@ func multipartImageInputs(c *gin.Context) ([]ImageInput, error) {
 				}
 				inputs = append(inputs, input)
 			} else {
-				inputs = append(inputs, ImageInput{Type: "image_url", URL: text})
+				imageType := "image_url"
+				inputs = append(inputs, ImageInput{Type: &imageType, URL: &text})
 			}
 			continue
 		}
@@ -251,7 +261,9 @@ func multipartImageInputs(c *gin.Context) ([]ImageInput, error) {
 		if closeErr != nil {
 			return nil, fmt.Errorf("encode image file: %w", closeErr)
 		}
-		inputs = append(inputs, ImageInput{Type: "image_url", URL: encoded.String()})
+		imageType := "image_url"
+		imageURL := encoded.String()
+		inputs = append(inputs, ImageInput{Type: &imageType, URL: &imageURL})
 	}
 	if len(inputs) == 0 {
 		return nil, errors.New("image is required")
