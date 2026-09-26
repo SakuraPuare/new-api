@@ -59,9 +59,11 @@ func TestUpdateChannelStatusReEnablesKeyWhileChannelRemainsEnabled(t *testing.T)
 		Key:    "key-a\nkey-b",
 		Status: common.ChannelStatusEnabled,
 		ChannelInfo: ChannelInfo{
-			IsMultiKey:         true,
-			MultiKeySize:       2,
-			MultiKeyStatusList: map[int]int{1: common.ChannelStatusAutoDisabled},
+			IsMultiKey:             true,
+			MultiKeySize:           2,
+			MultiKeyStatusList:     map[int]int{1: common.ChannelStatusAutoDisabled},
+			MultiKeyDisabledReason: map[int]string{1: "provider rejected key"},
+			MultiKeyDisabledTime:   map[int]int64{1: 1234},
 		},
 	}
 	require.NoError(t, DB.Create(&channel).Error)
@@ -73,6 +75,8 @@ func TestUpdateChannelStatusReEnablesKeyWhileChannelRemainsEnabled(t *testing.T)
 	require.NoError(t, DB.First(&stored, channel.Id).Error)
 	assert.Equal(t, common.ChannelStatusEnabled, stored.Status)
 	assert.NotContains(t, stored.ChannelInfo.MultiKeyStatusList, 1)
+	assert.NotContains(t, stored.ChannelInfo.MultiKeyDisabledReason, 1)
+	assert.NotContains(t, stored.ChannelInfo.MultiKeyDisabledTime, 1)
 }
 
 func TestSaveStatusStateFromSingleKeySnapshotPreservesUnownedColumns(t *testing.T) {
