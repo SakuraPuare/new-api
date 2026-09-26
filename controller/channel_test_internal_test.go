@@ -371,6 +371,49 @@ func TestSelectChannelsForAutomaticTestAutoBanOnlyUsesEligibleChannels(t *testin
 	require.Equal(t, 3, selected[1].Id)
 }
 
+func TestSelectChannelsForMultiKeyProbeOnlyUsesAutoDisabledKeys(t *testing.T) {
+	autoBanEnabled := 1
+	channels := []*model.Channel{
+		{
+			Id:      1,
+			Status:  common.ChannelStatusEnabled,
+			AutoBan: &autoBanEnabled,
+			Key:     "key-a\nkey-b",
+			ChannelInfo: model.ChannelInfo{
+				IsMultiKey:         true,
+				MultiKeySize:       2,
+				MultiKeyStatusList: map[int]int{1: common.ChannelStatusAutoDisabled},
+			},
+		},
+		{Id: 2, Status: common.ChannelStatusEnabled, Key: "key-c"},
+		{Id: 3, Status: common.ChannelStatusManuallyDisabled, Key: "key-d\nkey-e", ChannelInfo: model.ChannelInfo{IsMultiKey: true, MultiKeyStatusList: map[int]int{1: common.ChannelStatusAutoDisabled}}},
+	}
+
+	selected := selectChannelsForMultiKeyProbe(channels)
+
+	require.Len(t, selected, 1)
+	require.Equal(t, 1, selected[0].Id)
+}
+
+func TestChannelProbeForKeyOnlySelectsTargetKey(t *testing.T) {
+	channel := &model.Channel{
+		Id:  1,
+		Key: "key-a\nkey-b\nkey-c",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:         true,
+			MultiKeySize:       3,
+			MultiKeyStatusList: map[int]int{1: common.ChannelStatusAutoDisabled},
+		},
+	}
+
+	probe := channelProbeForKey(channel, 1)
+	key, index, err := probe.GetNextEnabledKey()
+
+	require.Nil(t, err)
+	require.Equal(t, "key-b", key)
+	require.Equal(t, 1, index)
+}
+
 func TestRunChannelTestWorkersHonorsConfiguredConcurrency(t *testing.T) {
 	originalInterval := common.RequestInterval
 	common.RequestInterval = 0
