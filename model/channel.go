@@ -789,7 +789,24 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		overridesKeyExhaustion := channel.ChannelInfo.IsMultiKey && usingKey == "" &&
 			status == common.ChannelStatusManuallyDisabled && reason != ChannelStatusReasonAllKeysDisabled &&
 			channel.GetOtherInfo()["status_reason"] == ChannelStatusReasonAllKeysDisabled
-		if channel.Status == status && !overridesKeyExhaustion {
+		if channel.ChannelInfo.IsMultiKey && usingKey != "" {
+			keyIndex := -1
+			for index, key := range channel.GetKeys() {
+				if key == usingKey {
+					keyIndex = index
+					break
+				}
+			}
+			if keyIndex >= 0 {
+				keyStatus := common.ChannelStatusEnabled
+				if currentStatus, ok := channel.ChannelInfo.MultiKeyStatusList[keyIndex]; ok {
+					keyStatus = currentStatus
+				}
+				if keyStatus == status {
+					return false
+				}
+			}
+		} else if channel.Status == status && !overridesKeyExhaustion {
 			return false
 		}
 
