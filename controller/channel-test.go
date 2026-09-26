@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -969,6 +970,81 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 	return summary
 }
 
+func autoDisabledMultiKeyIndexes(channel *model.Channel) []int {
+	if channel == nil || !channel.ChannelInfo.IsMultiKey {
+		return nil
+	}
+
+	keys := channel.GetKeys()
+	indexes := make([]int, 0)
+	for index, status := range channel.ChannelInfo.MultiKeyStatusList {
+		if status == common.ChannelStatusAutoDisabled && index >= 0 && index < len(keys) {
+			indexes = append(indexes, index)
+		}
+	}
+	sort.Ints(indexes)
+	return indexes
+}
+
+func channelProbeForKey(channel *model.Channel, keyIndex int) *model.Channel {
+	probe := *channel
+	probe.Keys = append([]string(nil), channel.Keys...)
+	keys := probe.GetKeys()
+	probe.ChannelInfo.MultiKeyMode = constant.MultiKeyModeRandom
+	probe.ChannelInfo.MultiKeyStatusList = make(map[int]int, len(keys)-1)
+	for index := range keys {
+		if index != keyIndex {
+			probe.ChannelInfo.MultiKeyStatusList[index] = common.ChannelStatusManuallyDisabled
+		}
+	}
+	return &probe
+}
+
+func probeAutoDisabledMultiKeys(ctx context.Context, channel *model.Channel, testUserID int) channelTestSummary {
+	summary := channelTestSummary{}
+	for _, keyIndex := range autoDisabledMultiKeyIndexes(channel) {
+		if ctx.Err() != nil {
+			return summary
+		}
+
+		result := testChannel(ctx, channelProbeForKey(channel, keyIndex), testUserID, "", "", false)
+		summary.Tested++
+		if result.newAPIError != nil || result.context == nil {
+			summary.Failed++
+			continue
+		}
+
+		key := common.GetContextKeyString(result.context, constant.ContextKeyChannelKey)
+		service.EnableChannel(channel.Id, key, channel.Name)
+		summary.Succeeded++
+		summary.Enabled++
+	}
+	return summary
+}
+
+func selectChannelsForMultiKeyProbe(channels []*model.Channel) []*model.Channel {
+	selected := make([]*model.Channel, 0)
+	for _, channel := range channels {
+		if channel.Status == common.ChannelStatusManuallyDisabled || len(autoDisabledMultiKeyIndexes(channel)) == 0 {
+			continue
+		}
+		selected = append(selected, channel)
+	}
+	return selected
+}
+
+func performMultiKeyProbes(ctx context.Context, channels []*model.Channel, testUserID int, concurrency int, report func(processed, total int)) channelTestSummary {
+	return runChannelTestWorkers(
+		ctx,
+		channels,
+		concurrency,
+		func(ctx context.Context, channel *model.Channel) channelTestSummary {
+			return probeAutoDisabledMultiKeys(ctx, channel, testUserID)
+		},
+		report,
+	)
+}
+
 // runChannelTestWorkers executes independent channel tests with bounded
 // concurrency. Results and progress are reduced by the caller goroutine, so
 // summary counts and the progress reporter remain serialized.
@@ -1108,6 +1184,15 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 	allowDisable := mode != operation_setting.ChannelTestModePassiveRecovery
 	concurrency := operation_setting.GetMonitorSetting().ChannelTestConcurrency
 	summary := performChannelTests(ctx, selected, testUserID, allowDisable, concurrency, report)
+	if mode == operation_setting.ChannelTestModePassiveRecovery && common.AutomaticEnableChannelEnabled {
+		probeChannels := selectChannelsForMultiKeyProbe(channels)
+		probeSummary := performMultiKeyProbes(ctx, probeChannels, testUserID, concurrency, nil)
+		summary.Tested += probeSummary.Tested
+		summary.Succeeded += probeSummary.Succeeded
+		summary.Failed += probeSummary.Failed
+		summary.Disabled += probeSummary.Disabled
+		summary.Enabled += probeSummary.Enabled
+	}
 	if notify && (ctx == nil || ctx.Err() == nil) {
 		lang := service.RootUserLanguage()
 		service.NotifyRootUser(dto.NotifyTypeChannelTest, i18n.Translate(lang, i18n.MsgChannelTestCompletedSubject), i18n.Translate(lang, i18n.MsgChannelTestCompletedContent))
