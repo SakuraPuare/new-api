@@ -678,6 +678,17 @@ func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
 	if jsonBytes[0] != '{' && jsonBytes[0] != '[' {
 		return ""
 	}
+	baseResp := gjson.GetBytes(jsonBytes, "base_resp")
+	if baseResp.Exists() {
+		statusCode := gjson.GetBytes(jsonBytes, "base_resp.status_code").Int()
+		if statusCode != 0 {
+			statusMessage := gjson.GetBytes(jsonBytes, "base_resp.status_msg").String()
+			if statusMessage == "" {
+				return fmt.Sprintf("upstream base_resp error (%d)", statusCode)
+			}
+			return fmt.Sprintf("upstream base_resp error (%d): %s", statusCode, statusMessage)
+		}
+	}
 	errVal := gjson.GetBytes(jsonBytes, "error")
 	if !errVal.Exists() || errVal.Type == gjson.Null {
 		return ""

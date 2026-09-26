@@ -414,6 +414,13 @@ func TestChannelProbeForKeyOnlySelectsTargetKey(t *testing.T) {
 	require.Equal(t, 1, index)
 }
 
+func TestDetectErrorMessageFromJSONBytesHandlesBaseResponseErrors(t *testing.T) {
+	errMessage := detectErrorMessageFromJSONBytes([]byte(`{"base_resp":{"status_code":2056,"status_msg":"Token Plan usage limit reached"}}`))
+
+	require.Equal(t, "upstream base_resp error (2056): Token Plan usage limit reached", errMessage)
+	require.Empty(t, detectErrorMessageFromJSONBytes([]byte(`{"base_resp":{"status_code":0}}`)))
+}
+
 func TestRunChannelTestWorkersHonorsConfiguredConcurrency(t *testing.T) {
 	originalInterval := common.RequestInterval
 	common.RequestInterval = 0
