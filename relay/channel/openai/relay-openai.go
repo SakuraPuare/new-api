@@ -121,12 +121,20 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var secondLastStreamData string // 保留倒数第二个stream data；部分兼容网关把完整usage放在倒数第二个事件
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
+	var streamErr *types.NewAPIError
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog(common.LogText("error handling stream format: %s", err.Error()))
 				sr.Error(err)
+			}
+		}
+		if info.ChannelType == constant.ChannelTypeMiniMax {
+			if err := miniMaxStreamError(data); err != nil {
+				streamErr = err
+				sr.Stop(err)
+				return
 			}
 		}
 		if len(data) > 0 {
@@ -142,6 +150,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 	})
+
+	if streamErr != nil {
+		return nil, streamErr
+	}
+	if info.ChannelType == constant.ChannelTypeMiniMax && info.ReceivedResponseCount == 0 {
+		return nil, types.NewErrorWithStatusCode(
+			fmt.Errorf("MiniMax upstream returned an empty stream"),
+			types.ErrorCodeBadResponse,
+			http.StatusBadGateway,
+		)
+	}
 
 	info.StreamStatus.RequireTerminal()
 
@@ -195,6 +214,53 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 
 	return usage, nil
+}
+
+type miniMaxStreamBaseResponse struct {
+	StatusCode int    `json:"status_code"`
+	StatusMsg  string `json:"status_msg"`
+}
+
+type miniMaxStreamEnvelope struct {
+	BaseResp miniMaxStreamBaseResponse `json:"base_resp"`
+}
+
+func miniMaxStreamError(data string) *types.NewAPIError {
+	var envelope miniMaxStreamEnvelope
+	if err := common.UnmarshalJsonStr(data, &envelope); err != nil || envelope.BaseResp.StatusCode == 0 {
+		return nil
+	}
+
+	message := fmt.Sprintf("MiniMax upstream error (%d)", envelope.BaseResp.StatusCode)
+	if envelope.BaseResp.StatusMsg != "" {
+		message += ": " + envelope.BaseResp.StatusMsg
+	}
+
+	errorCode := types.ErrorCodeBadResponse
+	statusCode := http.StatusBadGateway
+	if isMiniMaxKeyError(envelope.BaseResp.StatusCode) {
+		// MiniMax returns authentication, invalid-key, and token-plan failures
+		// inside an HTTP 200 SSE event. Treat those as key-scoped channel errors
+		// so the normal retry and multi-key auto-ban path can disable the actual
+		// key that was selected.
+		errorCode = types.ErrorCodeChannelInvalidKey
+		statusCode = http.StatusUnauthorized
+	}
+
+	return types.NewErrorWithStatusCode(
+		fmt.Errorf("%s", message),
+		errorCode,
+		statusCode,
+	)
+}
+
+func isMiniMaxKeyError(statusCode int) bool {
+	switch statusCode {
+	case 1004, 2049, 2056:
+		return true
+	default:
+		return false
+	}
 }
 
 // observeStreamChoices collects billable function call names and records the
