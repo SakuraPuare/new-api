@@ -813,7 +813,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 				if currentStatus, ok := channel.ChannelInfo.MultiKeyStatusList[keyIndex]; ok {
 					keyStatus = currentStatus
 				}
-				if keyStatus == status {
+				if keyStatus == status && channel.Status == status {
 					return false
 				}
 			}
