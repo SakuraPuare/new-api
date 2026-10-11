@@ -79,6 +79,29 @@ func TestUpdateChannelStatusReEnablesKeyWhileChannelRemainsEnabled(t *testing.T)
 	assert.NotContains(t, stored.ChannelInfo.MultiKeyDisabledTime, 1)
 }
 
+func TestUpdateChannelStatusReEnablesChannelWhenKeyAlreadyEnabled(t *testing.T) {
+	setupChannelStatusTest(t)
+
+	channel := Channel{
+		Name:   "multi-key-channel-recovery",
+		Key:    "key-a\nkey-b",
+		Status: common.ChannelStatusAutoDisabled,
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:         true,
+			MultiKeySize:       2,
+			MultiKeyStatusList: map[int]int{},
+		},
+	}
+	require.NoError(t, DB.Create(&channel).Error)
+
+	changed := UpdateChannelStatus(channel.Id, "key-a", common.ChannelStatusEnabled, "")
+	require.True(t, changed)
+
+	var stored Channel
+	require.NoError(t, DB.First(&stored, channel.Id).Error)
+	assert.Equal(t, common.ChannelStatusEnabled, stored.Status)
+}
+
 func TestSaveStatusStateFromSingleKeySnapshotPreservesUnownedColumns(t *testing.T) {
 	setupChannelStatusTest(t)
 
