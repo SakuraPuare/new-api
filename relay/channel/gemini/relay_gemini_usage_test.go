@@ -754,3 +754,141 @@ func TestGeminiHandlersCountGroundingQueries(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiChatStreamHandlerMultiToolCallDefersFinishReasonUntilStop(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldStreamingTimeout
+	})
+
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		OriginModelName: "gemini-3.8-flash",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3.8-flash-high",
+		},
+	}
+
+	frames := []dto.GeminiChatResponse{
+		{
+			Candidates: []dto.GeminiChatCandidate{{
+				Content: dto.GeminiChatContent{
+					Role: "model",
+					Parts: []dto.GeminiPart{{
+						Thought: true,
+						Text:    "Thinking about tools",
+					}},
+				},
+			}},
+		},
+		{
+			Candidates: []dto.GeminiChatCandidate{{
+				Content: dto.GeminiChatContent{
+					Role: "model",
+					Parts: []dto.GeminiPart{{
+						FunctionCall: &dto.FunctionCall{
+							ID:           "call_1",
+							FunctionName: "read",
+							Arguments:    map[string]any{"path": "a.go"},
+						},
+					}},
+				},
+			}},
+		},
+		{
+			Candidates: []dto.GeminiChatCandidate{{
+				Content: dto.GeminiChatContent{
+					Role: "model",
+					Parts: []dto.GeminiPart{{
+						FunctionCall: &dto.FunctionCall{
+							ID:           "call_2",
+							FunctionName: "read",
+							Arguments:    map[string]any{"path": "b.go"},
+						},
+					}},
+				},
+			}},
+		},
+		{
+			Candidates: []dto.GeminiChatCandidate{{
+				Content: dto.GeminiChatContent{
+					Role:  "model",
+					Parts: []dto.GeminiPart{{Text: ""}},
+				},
+				FinishReason: common.GetPointer("STOP"),
+			}},
+			UsageMetadata: dto.GeminiUsageMetadata{
+				PromptTokenCount:     100,
+				CandidatesTokenCount: 25,
+				TotalTokenCount:      125,
+			},
+		},
+	}
+
+	var sseBody strings.Builder
+	for _, frame := range frames {
+		raw, err := common.Marshal(frame)
+		require.NoError(t, err)
+		sseBody.WriteString("data: ")
+		sseBody.Write(raw)
+		sseBody.WriteByte('\n')
+	}
+	sseBody.WriteString("data: [DONE]\n")
+
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(sseBody.String())),
+	}
+
+	usage, newAPIError := GeminiChatStreamHandler(c, info, resp)
+	require.Nil(t, newAPIError)
+	require.NotNil(t, usage)
+
+	var chunks []dto.ChatCompletionsStreamResponse
+	for line := range strings.SplitSeq(recorder.Body.String(), "\n") {
+		payload, ok := strings.CutPrefix(strings.TrimSpace(line), "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		var chunk dto.ChatCompletionsStreamResponse
+		require.NoError(t, common.UnmarshalJsonStr(payload, &chunk))
+		chunks = append(chunks, chunk)
+	}
+
+	sawFinishReason := false
+	finishCount := 0
+	var seenToolIDs []string
+	var seenToolIndexes []int
+	for _, chunk := range chunks {
+		for _, choice := range chunk.Choices {
+			hasDeltaPayload := choice.Delta.GetContentString() != "" ||
+				choice.Delta.GetReasoningContent() != "" ||
+				len(choice.Delta.ToolCalls) > 0
+			if sawFinishReason {
+				assert.False(t, hasDeltaPayload, "emitted content or tool_calls after finish_reason")
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				if tc.ID != "" {
+					seenToolIDs = append(seenToolIDs, tc.ID)
+				}
+				if tc.Index != nil {
+					seenToolIndexes = append(seenToolIndexes, *tc.Index)
+				}
+			}
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				sawFinishReason = true
+				finishCount++
+				assert.Equal(t, constant.FinishReasonToolCalls, *choice.FinishReason)
+			}
+		}
+	}
+
+	assert.Equal(t, 1, finishCount)
+	assert.Equal(t, []string{"call_1", "call_2"}, seenToolIDs)
+	assert.Equal(t, []int{0, 1}, seenToolIndexes)
+}
