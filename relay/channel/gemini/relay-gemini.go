@@ -310,6 +310,14 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	nextToolCallIndexByChoice := make(map[int]int)
 
 	usage, err := geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
+		hasNonStopFinish := false
+		for _, candidate := range geminiResponse.Candidates {
+			if candidate.FinishReason != nil && *candidate.FinishReason != "" && *candidate.FinishReason != "STOP" {
+				hasNonStopFinish = true
+				break
+			}
+		}
+
 		response, isStop := streamResponseGeminiChat2OpenAI(geminiResponse)
 
 		response.Id = id
@@ -317,7 +325,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		response.Model = info.UpstreamModelName
 		if response.IsToolCall() {
 			finishReason = constant.FinishReasonToolCalls
-			if info.RelayFormat == types.RelayFormatClaude {
+			if !hasNonStopFinish || info.RelayFormat == types.RelayFormatClaude {
 				for choiceIdx := range response.Choices {
 					response.Choices[choiceIdx].FinishReason = nil
 				}
