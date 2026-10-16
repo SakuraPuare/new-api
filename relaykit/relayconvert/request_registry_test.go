@@ -942,6 +942,67 @@ func TestConvertRequestOpenAIChatToGeminiAddsThoughtSignatureForAdvancedCustom(t
 	assert.Equal(t, sharedgemini.ThoughtSignatureBypassValue, thoughtSignature)
 }
 
+func TestConvertRequestOpenAIChatToGeminiReplaysThoughtSignatures(t *testing.T) {
+	assistantMessage := dto.Message{Role: "assistant", Content: "checking"}
+	assistantMessage.SetToolCalls([]dto.ToolCallRequest{
+		{
+			ID:   "call_1",
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:      "lookup",
+				Arguments: `{"q":"x"}`,
+			},
+			ExtraContent: []byte(`{"google":{"thought_signature":"sig_real_123"}}`),
+		},
+		{
+			ID:   "call_2",
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:      "lookup",
+				Arguments: `{"q":"y"}`,
+			},
+			ExtraContent: []byte(`{"google":{"thought_signature":"sig_real_456"}}`),
+		},
+		{
+			ID:   "call_3",
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:      "lookup",
+				Arguments: `{"q":"z"}`,
+			},
+		},
+	})
+	info := &convmeta.Values{
+		Options:             &convmeta.Options{Gemini: convmeta.GeminiOptions{FunctionCallThoughtSignatureEnabled: true}},
+		ChannelMetaAttached: true,
+		UpstreamModelName:   "gemini-test",
+	}
+	req := &dto.GeneralOpenAIRequest{
+		Model: "gemini-test",
+		Messages: []dto.Message{
+			{Role: "user", Content: "hi"},
+			assistantMessage,
+		},
+	}
+
+	result, err := ConvertRequest(nil, info, types.RelayFormatGemini, req)
+
+	require.NoError(t, err)
+	geminiReq := result.Value.(*dto.GeminiChatRequest)
+	parts := geminiReq.Contents[1].Parts
+	require.Len(t, parts, 4)
+	var signatures []string
+	for _, part := range parts[:3] {
+		var signature string
+		require.NotNil(t, part.FunctionCall)
+		require.NoError(t, kitutil.Unmarshal(part.ThoughtSignature, &signature))
+		signatures = append(signatures, signature)
+	}
+	assert.Equal(t, []string{"sig_real_123", "sig_real_456", sharedgemini.ThoughtSignatureBypassValue}, signatures)
+	assert.Equal(t, "checking", parts[3].Text)
+	assert.Empty(t, parts[3].ThoughtSignature)
+}
+
 func TestConvertRequestViaResponsesToGeminiStillUsesDirectSteps(t *testing.T) {
 	info := &convmeta.Values{
 		ConversionChain:     []types.RelayFormat{types.RelayFormatOpenAIResponses},

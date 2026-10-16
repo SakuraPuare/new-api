@@ -1,7 +1,9 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -11,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/convdiag"
+	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
@@ -80,6 +83,87 @@ func AttachFunctionCallThoughtSignature(opts *convmeta.Options, part *dto.Gemini
 		return false
 	}
 	return AttachThoughtSignatureBypass(opts, part)
+}
+
+// ApplyThoughtSignatureToFunctionCall replays a provider-issued signature onto
+// a functionCall part. signatureJSON is already JSON text (a quoted string).
+// A missing signature falls back to the bypass sentinel when the option is on.
+// A real signature is kept even when the bypass option is off: dropping it
+// makes Gemini reject the following turn.
+func ApplyThoughtSignatureToFunctionCall(opts *convmeta.Options, part *dto.GeminiPart, signatureJSON string) bool {
+	if part == nil || !HasFunctionCallContent(part.FunctionCall) || len(part.ThoughtSignature) > 0 {
+		return false
+	}
+	signatureJSON = strings.TrimSpace(signatureJSON)
+	if signatureJSON != "" && kitutil.Valid([]byte(signatureJSON)) {
+		part.ThoughtSignature = []byte(signatureJSON)
+		return true
+	}
+	return AttachThoughtSignatureBypass(opts, part)
+}
+
+// ThoughtSignatureJSON returns a Gemini part thoughtSignature as JSON text.
+// Gemini sends the value as a JSON string; an already-valid JSON value is kept.
+func ThoughtSignatureJSON(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || !kitutil.Valid(raw) {
+		return ""
+	}
+	return string(raw)
+}
+
+// OpenAIThoughtSignature wraps a Gemini thoughtSignature JSON value in the
+// OpenAI tool-call extension clients and downstream translators replay:
+// {"google":{"thought_signature":<signature>}}.
+func OpenAIThoughtSignature(signatureJSON string) json.RawMessage {
+	signatureJSON = strings.TrimSpace(signatureJSON)
+	if signatureJSON == "" {
+		return nil
+	}
+	return []byte(`{"google":{"thought_signature":` + signatureJSON + `}}`)
+}
+
+// ThoughtSignatureFromOpenAIToolCall reads a replayed Gemini thoughtSignature
+// from a tool call. A real signature wins over the documented bypass sentinels.
+func ThoughtSignatureFromOpenAIToolCall(extra json.RawMessage, functionExtra json.RawMessage) string {
+	for _, raw := range []json.RawMessage{extra, functionExtra} {
+		if signature := thoughtSignatureFromExtraContent(raw); signature != "" {
+			return signature
+		}
+	}
+	return ""
+}
+
+func thoughtSignatureFromExtraContent(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || !kitutil.Valid(raw) {
+		return ""
+	}
+	var extra struct {
+		Google struct {
+			ThoughtSignature json.RawMessage `json:"thought_signature"`
+		} `json:"google"`
+	}
+	if kitutil.Unmarshal(raw, &extra) != nil {
+		return ""
+	}
+	signature := extra.Google.ThoughtSignature
+	signature = bytes.TrimSpace(signature)
+	if len(signature) == 0 || string(signature) == "null" || !kitutil.Valid(signature) {
+		return ""
+	}
+	if signature[0] != '"' {
+		quoted, err := kitutil.Marshal(string(signature))
+		if err != nil {
+			return ""
+		}
+		return string(quoted)
+	}
+	var text string
+	if kitutil.Unmarshal(signature, &text) != nil || strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return string(signature)
 }
 
 func AttachFirstTextThoughtSignature(opts *convmeta.Options, parts []dto.GeminiPart) bool {

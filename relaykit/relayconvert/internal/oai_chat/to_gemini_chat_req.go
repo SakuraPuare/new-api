@@ -260,7 +260,10 @@ func OpenAIChatRequestToGeminiGenerateContent(c context.Context, textRequest dto
 						Arguments:    args,
 					},
 				}
-				if shouldAttachThoughtSignature && !signatureAttached && sharedgemini.AttachFunctionCallThoughtSignature(opts, &toolCall) {
+				// Replay the signature that came back with this call. Every
+				// functionCall needs its own; a missing one still gets the
+				// bypass sentinel so Gemini accepts the following turn.
+				if sharedgemini.ApplyThoughtSignatureToFunctionCall(opts, &toolCall, sharedgemini.ThoughtSignatureFromOpenAIToolCall(call.ExtraContent, nil)) {
 					signatureAttached = true
 				}
 				parts = append(parts, toolCall)

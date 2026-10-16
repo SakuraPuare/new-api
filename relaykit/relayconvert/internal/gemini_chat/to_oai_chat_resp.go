@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	sharedgemini "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/gemini"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
@@ -164,15 +165,8 @@ func ResponseGeminiChat2OpenAI(id string, created int64, response *dto.GeminiCha
 			choice.Message.SetStringContent(content.String())
 		}
 		if candidate.FinishReason != nil {
-			switch *candidate.FinishReason {
-			case "STOP":
-				choice.FinishReason = types.FinishReasonStop
-			case "MAX_TOKENS":
-				choice.FinishReason = types.FinishReasonLength
-			case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "OTHER":
-				choice.FinishReason = types.FinishReasonContentFilter
-			default:
-				choice.FinishReason = types.FinishReasonContentFilter
+			if mapped, ok := openAIFinishReasonFromGemini(*candidate.FinishReason); ok {
+				choice.FinishReason = mapped
 			}
 		}
 		if isToolCall {
@@ -217,15 +211,8 @@ func StreamResponseGeminiChat2OpenAI(geminiResponse *dto.GeminiChatResponse) (*d
 		isTools := false
 		isThought := false
 		if candidate.FinishReason != nil {
-			switch *candidate.FinishReason {
-			case "STOP":
-				choice.FinishReason = &types.FinishReasonStop
-			case "MAX_TOKENS":
-				choice.FinishReason = &types.FinishReasonLength
-			case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "OTHER":
-				choice.FinishReason = &types.FinishReasonContentFilter
-			default:
-				choice.FinishReason = &types.FinishReasonContentFilter
+			if mapped, ok := openAIFinishReasonFromGemini(*candidate.FinishReason); ok {
+				choice.FinishReason = &mapped
 			}
 		}
 		for _, part := range candidate.Content.Parts {
@@ -719,6 +706,23 @@ func (s *GeminiToChatStreamState) terminalChunk(model string) *dto.ChatCompletio
 	}
 }
 
+// openAIFinishReasonFromGemini maps a Gemini finishReason onto an OpenAI one.
+// Only reasons Gemini documents as a safety or policy block become
+// content_filter. An empty candidate or an unspecified reason must not: clients
+// treat content_filter as "the provider blocked this response".
+func openAIFinishReasonFromGemini(reason string) (string, bool) {
+	switch reason {
+	case "STOP":
+		return types.FinishReasonStop, true
+	case "MAX_TOKENS":
+		return types.FinishReasonLength, true
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+		return types.FinishReasonContentFilter, true
+	default:
+		return "", false
+	}
+}
+
 func geminiResponseToolCall(item *dto.GeminiPart) *dto.ToolCallResponse {
 	argsBytes, err := kitutil.Marshal(item.FunctionCall.Arguments)
 	if err != nil {
@@ -735,5 +739,6 @@ func geminiResponseToolCall(item *dto.GeminiPart) *dto.ToolCallResponse {
 			Arguments: string(argsBytes),
 			Name:      item.FunctionCall.FunctionName,
 		},
+		ExtraContent: sharedgemini.OpenAIThoughtSignature(sharedgemini.ThoughtSignatureJSON(item.ThoughtSignature)),
 	}
 }
