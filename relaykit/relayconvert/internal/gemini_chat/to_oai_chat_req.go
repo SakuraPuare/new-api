@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/convdiag"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/jsonutil"
 	relaymedia "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/media"
+	sharedgemini "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/gemini"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -117,6 +118,7 @@ func GeminiGenerateContentRequestToOpenAIChat(ctx context.Context, geminiRequest
 						Name:      part.FunctionCall.FunctionName,
 						Arguments: jsonutil.ToJSONString(part.FunctionCall.Arguments),
 					},
+					ExtraContent: sharedgemini.OpenAIThoughtSignature(sharedgemini.ThoughtSignatureJSON(part.ThoughtSignature)),
 				}
 				toolCalls = append(toolCalls, toolCall)
 			} else if part.FunctionResponse != nil {

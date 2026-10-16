@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
+	sharedgemini "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/gemini"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 )
 
@@ -113,6 +114,9 @@ func ResponseOpenAI2Gemini(openAIResponse *dto.OpenAITextResponse, info convmeta
 					Arguments:    geminiFunctionArguments(toolCall.Function.Arguments),
 				},
 			}
+			if signature := sharedgemini.ThoughtSignatureFromOpenAIToolCall(toolCall.ExtraContent, nil); signature != "" {
+				part.ThoughtSignature = []byte(signature)
+			}
 			content.Parts = append(content.Parts, part)
 		}
 
@@ -205,6 +209,9 @@ func StreamResponseOpenAI2Gemini(openAIResponse *dto.ChatCompletionsStreamRespon
 						FunctionName: toolCall.Function.Name,
 						Arguments:    geminiFunctionArguments(toolCall.Function.Arguments),
 					},
+				}
+				if signature := sharedgemini.ThoughtSignatureFromOpenAIToolCall(toolCall.ExtraContent, nil); signature != "" {
+					part.ThoughtSignature = []byte(signature)
 				}
 				content.Parts = append(content.Parts, part)
 			}

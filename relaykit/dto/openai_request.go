@@ -414,6 +414,9 @@ type ToolCallRequest struct {
 	Type     string          `json:"type"`
 	Function FunctionRequest `json:"function"`
 	Custom   json.RawMessage `json:"custom,omitempty"`
+	// ExtraContent carries provider extensions clients must replay unchanged,
+	// such as Gemini thought signatures under google.thought_signature.
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 	// Native is a complete vendor tool object sent instead of the fields
 	// above. Function has no omitempty, so a non-function tool would
 	// otherwise carry "function":{"name":""}, which vendor schemas with
