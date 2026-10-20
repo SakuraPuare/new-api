@@ -180,6 +180,29 @@ func streamResponseGeminiChat2OpenAI(geminiResponse *dto.GeminiChatResponse) (*d
 	return relayconvert.StreamResponseGeminiChat2OpenAI(geminiResponse)
 }
 
+// maxGeminiEmptyResponseRetries bounds how many times an empty Gemini turn is
+// handed back to the retry policy before the request is failed outright.
+const maxGeminiEmptyResponseRetries = 2
+
+// hasClientVisibleDelta reports whether a converted chunk carries anything the
+// client can render. Gemini answers some turns with candidate frames that hold
+// no parts at all (MALFORMED_FUNCTION_CALL, OTHER, empty candidate), which
+// convert into content-less chunks.
+func hasClientVisibleDelta(response *dto.ChatCompletionsStreamResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, choice := range response.Choices {
+		if choice.Delta.GetContentString() != "" ||
+			choice.Delta.GetReasoningContent() != "" ||
+			len(choice.Delta.ToolCalls) > 0 ||
+			len(choice.Delta.Annotations) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func handleStream(c *gin.Context, info *relaycommon.RelayInfo, resp *dto.ChatCompletionsStreamResponse) error {
 	streamData, err := common.Marshal(resp)
 	if err != nil {
@@ -308,6 +331,9 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	finishReason := constant.FinishReasonStop
 	toolCallIndexByChoice := make(map[int]map[string]int)
 	nextToolCallIndexByChoice := make(map[int]int)
+	sawClientOutput := false
+	sentFrame := false
+	finishReasonSent := false
 
 	usage, err := geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
 		hasNonStopFinish := false
@@ -355,6 +381,14 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		}
 
 		logger.LogDebug(c, "info.SendResponseCount = %d", info.SendResponseCount)
+		// Hold the stream back until the model produces something the client
+		// can render. Empty candidate frames would otherwise be flushed as a
+		// finished-but-empty turn; keeping the writer untouched lets the caller
+		// report an empty response and retry instead.
+		if !sawClientOutput && !hasClientVisibleDelta(response) {
+			return true
+		}
+		sawClientOutput = true
 		if info.SendResponseCount == 0 {
 			// send first response
 			emptyResponse := helper.GenerateStartEmptyResponse(id, createAt, info.UpstreamModelName, nil)
@@ -393,16 +427,51 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		if err != nil {
 			logger.LogError(c, err.Error())
 		}
+		sentFrame = true
+		for choiceIdx := range response.Choices {
+			if response.Choices[choiceIdx].FinishReason != nil {
+				finishReasonSent = true
+			}
+		}
 		if isStop {
 			if info.RelayFormat != types.RelayFormatClaude {
 				_ = handleStream(c, info, helper.GenerateStopResponse(id, createAt, info.UpstreamModelName, finishReason))
 			}
+			finishReasonSent = true
 		}
 		return true
 	})
 
 	if err != nil {
 		return usage, err
+	}
+	if !sentFrame {
+		// Nothing reached the client: the model answered with no content at all.
+		// Report it as an upstream error so the retry policy gets a chance to
+		// re-run the turn instead of handing back an empty completion. Retrying
+		// is bounded because an empty answer usually repeats within the same
+		// prompt.
+		if info.RetryIndex < maxGeminiEmptyResponseRetries {
+			return usage, types.NewOpenAIError(
+				errors.New("empty response from Gemini API"),
+				types.ErrorCodeEmptyResponse,
+				http.StatusInternalServerError,
+			)
+		}
+		return usage, types.NewOpenAIError(
+			errors.New("empty response from Gemini API after retries"),
+			types.ErrorCodeEmptyResponse,
+			http.StatusInternalServerError,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
+	if !finishReasonSent && info.RelayFormat != types.RelayFormatClaude {
+		// Some Gemini turns end without any finish reason the converter can map
+		// (or without a terminal frame at all). OpenAI-compatible clients read a
+		// missing finish_reason as a truncated stream, so close it explicitly.
+		if stopErr := handleStream(c, info, helper.GenerateStopResponse(id, createAt, info.UpstreamModelName, finishReason)); stopErr != nil {
+			logger.LogError(c, stopErr.Error())
+		}
 	}
 
 	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, *usage)

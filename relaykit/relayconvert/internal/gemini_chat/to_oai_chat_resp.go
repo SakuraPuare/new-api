@@ -716,10 +716,17 @@ func openAIFinishReasonFromGemini(reason string) (string, bool) {
 		return types.FinishReasonStop, true
 	case "MAX_TOKENS":
 		return types.FinishReasonLength, true
-	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+		"IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION":
 		return types.FinishReasonContentFilter, true
-	default:
+	case "", "FINISH_REASON_UNSPECIFIED":
 		return "", false
+	default:
+		// Gemini reports terminal reasons OpenAI has no equivalent for
+		// (MALFORMED_FUNCTION_CALL, UNEXPECTED_TOOL_CALL, OTHER, LANGUAGE, ...).
+		// Dropping them leaves the client without a finish_reason, which reads
+		// as a truncated stream instead of a completed empty turn.
+		return types.FinishReasonStop, true
 	}
 }
 
