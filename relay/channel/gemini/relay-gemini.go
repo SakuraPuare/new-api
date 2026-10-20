@@ -203,6 +203,25 @@ func hasClientVisibleDelta(response *dto.ChatCompletionsStreamResponse) bool {
 	return false
 }
 
+// responseHasMeaningfulFinish reports whether a content-less chunk still tells
+// the caller something actionable: the turn was blocked or truncated. Those
+// outcomes are forwarded instead of being retried as empty responses.
+func responseHasMeaningfulFinish(response *dto.ChatCompletionsStreamResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, choice := range response.Choices {
+		if choice.FinishReason == nil {
+			continue
+		}
+		switch *choice.FinishReason {
+		case types.FinishReasonContentFilter, types.FinishReasonLength:
+			return true
+		}
+	}
+	return false
+}
+
 func handleStream(c *gin.Context, info *relaycommon.RelayInfo, resp *dto.ChatCompletionsStreamResponse) error {
 	streamData, err := common.Marshal(resp)
 	if err != nil {
@@ -349,6 +368,15 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		response.Id = id
 		response.Created = createAt
 		response.Model = info.UpstreamModelName
+		// A prompt blocked before generation arrives without candidates, so the
+		// converter has nothing to terminate. Surface it as content_filter rather
+		// than as an empty turn the retry policy would replay.
+		if len(response.Choices) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
+			response.Choices = append(response.Choices, dto.ChatCompletionsStreamResponseChoice{
+				Index:        0,
+				FinishReason: common.GetPointer(types.FinishReasonContentFilter),
+			})
+		}
 		if response.IsToolCall() {
 			finishReason = constant.FinishReasonToolCalls
 			if !hasNonStopFinish || info.RelayFormat == types.RelayFormatClaude {
@@ -384,8 +412,9 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		// Hold the stream back until the model produces something the client
 		// can render. Empty candidate frames would otherwise be flushed as a
 		// finished-but-empty turn; keeping the writer untouched lets the caller
-		// report an empty response and retry instead.
-		if !sawClientOutput && !hasClientVisibleDelta(response) {
+		// report an empty response and retry instead. Blocked or truncated turns
+		// are real outcomes for the caller and must not be retried.
+		if !sawClientOutput && !hasClientVisibleDelta(response) && !responseHasMeaningfulFinish(response) {
 			return true
 		}
 		sawClientOutput = true
