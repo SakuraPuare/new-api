@@ -191,3 +191,57 @@ func TestGeminiChatStreamHandlerMapsUnknownFinishReasonToStop(t *testing.T) {
 	require.Len(t, finishReasons, 1)
 	assert.Equal(t, types.FinishReasonStop, finishReasons[0])
 }
+
+func collectFinishReasons(t *testing.T, body string) []string {
+	t.Helper()
+	var finishReasons []string
+	for line := range strings.SplitSeq(body, "\n") {
+		payload, ok := strings.CutPrefix(strings.TrimSpace(line), "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		var chunk dto.ChatCompletionsStreamResponse
+		require.NoError(t, common.UnmarshalJsonStr(payload, &chunk))
+		for _, choice := range chunk.Choices {
+			if choice.FinishReason != nil {
+				finishReasons = append(finishReasons, *choice.FinishReason)
+			}
+		}
+	}
+	return finishReasons
+}
+
+// A safety-blocked turn carries a real terminal state even without content, so
+// it must reach the client as content_filter instead of being retried as an
+// empty response.
+func TestGeminiChatStreamHandlerForwardsBlockedTurnWithoutContent(t *testing.T) {
+	c, recorder := newGeminiStreamTestContext(t)
+	info := geminiTestRelayInfo()
+
+	resp := geminiStreamResponse(t, dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content:      dto.GeminiChatContent{Role: "model"},
+			FinishReason: common.GetPointer("SAFETY"),
+		}},
+	})
+
+	_, newAPIError := GeminiChatStreamHandler(c, info, resp)
+
+	require.Nil(t, newAPIError)
+	assert.Equal(t, []string{types.FinishReasonContentFilter}, collectFinishReasons(t, recorder.Body.String()))
+}
+
+// Blocks raised before generation carry promptFeedback and no candidates at all.
+func TestGeminiChatStreamHandlerReportsPromptFeedbackBlock(t *testing.T) {
+	c, recorder := newGeminiStreamTestContext(t)
+	info := geminiTestRelayInfo()
+
+	resp := geminiStreamResponse(t, dto.GeminiChatResponse{
+		PromptFeedback: &dto.GeminiChatPromptFeedback{BlockReason: common.GetPointer("SAFETY")},
+	})
+
+	_, newAPIError := GeminiChatStreamHandler(c, info, resp)
+
+	require.Nil(t, newAPIError)
+	assert.Equal(t, []string{types.FinishReasonContentFilter}, collectFinishReasons(t, recorder.Body.String()))
+}
