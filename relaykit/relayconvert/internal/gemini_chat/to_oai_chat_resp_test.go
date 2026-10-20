@@ -57,7 +57,11 @@ func TestOpenAIFinishReasonFromGeminiDoesNotTreatUnknownAsContentFilter(t *testi
 		{reason: "SAFETY", want: types.FinishReasonContentFilter, ok: true},
 		{reason: "PROHIBITED_CONTENT", want: types.FinishReasonContentFilter, ok: true},
 		{reason: "FINISH_REASON_UNSPECIFIED", ok: false},
-		{reason: "OTHER", ok: false},
+		// Unknown terminal reasons must still terminate the turn: dropping them
+		// leaves OpenAI clients without a finish_reason (truncated stream), while
+		// mapping them to content_filter would misreport a non-safety stop.
+		{reason: "OTHER", want: types.FinishReasonStop, ok: true},
+		{reason: "MALFORMED_FUNCTION_CALL", want: types.FinishReasonStop, ok: true},
 		{reason: "", ok: false},
 	}
 	for _, tc := range cases {
