@@ -30,8 +30,12 @@ RUN go build -pgo="$(go list -m -f '{{.Dir}}' github.com/Calcium-Ion/moejs)/defa
 
 FROM debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
 
+# ca-certificates floor: 20250419~deb12u2 distrusts the compromised eMudhra
+# intermediates. The assertion fails the build on a stale mirror instead of
+# silently shipping the old bundle (and busts the layer cache on this line).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata libasan8 wget \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2 \
     && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates
 
