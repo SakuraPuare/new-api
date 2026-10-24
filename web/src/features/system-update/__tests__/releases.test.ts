@@ -37,11 +37,14 @@ describe('system release ordering', () => {
     ['v1.0.0+build.1', '1.0.0+build.2', 0],
     ['v1.0.0-rc.37', 'v1.0.0-rc.36', 1],
     ['v1.0.0', 'v1.0.0', 0],
+    ['v1.0.0-rc.46-40-g0da95183d', 'v1.0.0-rc.46', 0],
+    ['v1.0.0-rc.46-40-g0da95183d-dirty', 'v1.0.0-rc.46', 0],
+    ['v1.0.0-rc.47-1-gabc123', 'v1.0.0-rc.46', 1],
     ['v0.0.0', 'v1.0.0', null],
     ['dev', 'v1.0.0', null],
     ['', 'v1.0.0', null],
     ['v1.0.0-custom.1', 'v1.0.0', null],
-    ['v1.0.0-rc.36-2-gabcdef', 'v1.0.0', null],
+    ['v1.0.0-rc.36-2-gabcdef', 'v1.0.0', -1],
   ])('compares %s against %s as %s', (current, latest, expected) => {
     expect(compareSystemVersions(current, latest)).toBe(expected)
   })
