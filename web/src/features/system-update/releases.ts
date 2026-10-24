@@ -43,13 +43,17 @@ const releaseStages: Record<string, number> = {
   patch: 4,
 }
 
+/** Drop `git describe` distance (`-40-g0da95183d`) and a dirty marker. */
+function stripDescribedRevision(value: string): string {
+  return value.replace(/-dirty$/i, '').replace(/-\d+-g[0-9a-f]+$/i, '')
+}
+
 /** Project tags include post-release patches and historical numeric revisions. */
 export function parseSystemVersion(
   value: string | null | undefined
 ): SystemVersion | null {
-  const match = value
-    ?.trim()
-    .match(
+  const match = (value == null ? value : stripDescribedRevision(value.trim()))
+    ?.match(
       /^v?(\d+(?:\.\d+){2,})(?:-(alpha|beta|rc|patch)(?:\.(\d+))?(?:-i18nfix\.(\d+))?)?(?:\+[\da-zA-Z.-]+)?$/
     )
   if (!match || (match[4] && match[2] !== 'rc')) return null
