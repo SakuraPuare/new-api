@@ -52,6 +52,7 @@ export function SystemUpdateDialog(props: SystemUpdateDialogProps) {
   const snapshot = update.snapshot
   const releaseUrl = release ? getSystemReleaseUrl(release) : null
   const isPrerelease =
+    update.hasUpdate &&
     release &&
     (release.prerelease ||
       (parseSystemVersion(release.tag_name)?.stage ?? 3) < 3)
@@ -173,7 +174,7 @@ export function SystemUpdateDialog(props: SystemUpdateDialogProps) {
           </AlertDescription>
         </Alert>
       )}
-      {props.open && release && (
+      {props.open && release && update.hasUpdate && (
         <Suspense fallback={<Skeleton className='h-24 w-full' />}>
           {release.body ? (
             <ReleaseMarkdown baseUrl={releaseUrl ?? undefined}>
