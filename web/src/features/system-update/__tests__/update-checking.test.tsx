@@ -199,6 +199,30 @@ describe('administrator update entry', () => {
     expect(buttons[0]).toHaveFocus()
   })
 
+  test('does not present the installed pre-release as an available update', async () => {
+    const user = userEvent.setup()
+    client.setQueryData(STATUS_QUERY_KEY, { version: 'v1.0.0-rc.46' })
+    respondWithRelease('v1.0.0-rc.46')
+    render(<SystemUpdateAction presentation='version' />, { wrapper: Wrapper })
+
+    const trigger = await screen.findByRole('button', {
+      name: 'System updates, current version: v1.0.0-rc.46',
+    })
+    expect(within(trigger).queryByText('Update available')).not.toBeInTheDocument()
+    await user.click(trigger)
+
+    const dialog = await screen.findByRole('dialog', { name: 'System updates' })
+    expect(within(dialog).getAllByText('v1.0.0-rc.46')).toHaveLength(2)
+    expect(within(dialog).getByText('No newer version available.')).toBeInTheDocument()
+    expect(within(dialog).queryByText('Pre-release')).not.toBeInTheDocument()
+    expect(
+      within(dialog).queryByText(release.body)
+    ).not.toBeInTheDocument()
+    expect(
+      within(dialog).queryByRole('button', { name: 'Ignore this version' })
+    ).not.toBeInTheDocument()
+  })
+
   test('does not suggest a downgrade and updates every entry after a manual recheck', async () => {
     const user = userEvent.setup()
     client.setQueryData(STATUS_QUERY_KEY, { version: 'v1.0.0-rc.37' })
